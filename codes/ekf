@@ -1,0 +1,400 @@
+function estimasi_7_parameter()
+    %% ============================================================
+    %  PARAMETER ESTIMATION AND MODEL VALIDATION USING EKF
+    %  Data remains unchanged.
+    %  No forced assignment of x_est(3) = z.
+    %
+    %  EKF State:
+    %  x = [Sh; Eh; Ih; Rh; Sm; Em; Im;
+    %       alpha_h; alpha_m; beta_h; beta_m; sigma_h; mu_m; Lambda_m]
+    %% ============================================================
+    clc; close all;
+    format long g;
+    %% 1. ORIGINAL DATA
+    tahun = 2014:2024;
+    data_Ih_asli = [252027; 217025; 218450; 261617; 222085; ...
+                    250644; 254055; 304607; 443530; 418546; 543965];
+    N_steps = length(tahun);
+    %% 2. FIXED PARAMETERS
+    Lambda_h = 4340471.6684;
+    theta_h  = 52.14;
+    mu_h     = 0.0070218;
+    %% 3. INITIAL PARAMETERS TO BE ESTIMATED
+    alpha_h0  = 8.0000e-10;
+    alpha_m0  = 1.2000e-07;
+    beta_h0   = 0.6000;
+    beta_m0   = 0.8000;
+    sigma_h0  = 0.1000;
+    mu_m0     = 0.0143;
+    Lambda_m0 = 5.0000e+06;
+    %% 4. INITIAL STATE VALUES
+    Sh0 = 228099078;
+    Eh0 = 12672171;
+    Ih0 = 252027;
+    Rh0 = 12672171;
+    Sm0 = 405509472;
+    Em0 = 50688684;
+    Im0 = 50688684;
+    %% 5. EKF STATE INITIALIZATION
+    x_est = [Sh0; Eh0; Ih0; Rh0; Sm0; Em0; Im0; ...
+             alpha_h0; alpha_m0; beta_h0; beta_m0; sigma_h0; mu_m0; Lambda_m0];
+    n = length(x_est);
+    %% 6. BIOLOGICAL BOUNDS
+    lb = [zeros(7,1); ...
+          1e-12; 1e-12; 1e-6; 1e-6; 1e-6; 1e-6; 1e3];
+    ub = [inf(7,1); ...
+          1e-5; 1e-5; 100; 100; 10; 10; 1e9];
+    x_est = min(max(x_est, lb), ub);
+    %% 7. OBSERVATION MATRIX
+    H = [0 0 1 0 0 0 0 0 0 0 0 0 0 0];
+    %% 8. COVARIANCE TUNING
+    P = diag([ ...
+        (0.50*Sh0)^2, ...
+        (1.00*Eh0)^2, ...
+        (0.20*Ih0)^2, ...
+        (1.00*Rh0)^2, ...
+        (0.50*Sm0)^2, ...
+        (1.00*Em0)^2, ...
+        (1.00*Im0)^2, ...
+        (0.8e-7)^2, ...
+        (1.2e-7)^2, ...
+        10^2, ...
+        10^2, ...
+        1^2, ...
+        0.5^2, ...
+        (5e6)^2 ...
+    ]);
+    Q = diag([ ...
+        1e10, ...
+        1e12, ...
+        1e10, ...
+        1e10, ...
+        1e11, ...
+        1e12, ...
+        1e12, ...
+        (0.05e-7)^2, ...
+        (0.05e-7)^2, ...
+        0.50^2, ...
+        0.50^2, ...
+        0.05^2, ...
+        0.01^2, ...
+        (5e5)^2 ...
+    ]);
+    R_noise = (0.05 * mean(data_Ih_asli))^2;
+    %% 9. STORAGE
+    history_x_est = zeros(n, N_steps);
+    history_x_pred = zeros(n, N_steps);
+    innovation = zeros(N_steps, 1);
+    history_x_est(:,1) = x_est;
+    history_x_pred(:,1) = x_est;
+    innovation(1) = data_Ih_asli(1) - H*x_est;
+    %% 10. EKF LOOP
+    dt = 1;
+    sub_steps = 250;
+    for t = 2:N_steps
+        %% 10a. STATE PREDICTION
+        x_pred = model_step(x_est, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub);
+        %% 10b. NUMERICAL JACOBIAN
+        F = jacobian_numerik(x_est, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub);
+        %% 10c. COVARIANCE PREDICTION
+        P_pred = F * P * F' + Q;
+        P_pred = (P_pred + P_pred') / 2;
+        %% 10d. EKF CORRECTION
+        z = data_Ih_asli(t);
+        y = z - H*x_pred;
+        S_kov = H * P_pred * H' + R_noise;
+        K = P_pred * H' / S_kov;
+        x_est = x_pred + K*y;
+        x_est = min(max(x_est, lb), ub);
+        I = eye(n);
+        P = (I - K*H) * P_pred * (I - K*H)' + K * R_noise * K';
+        P = (P + P') / 2;
+        history_x_pred(:,t) = x_pred;
+        history_x_est(:,t) = x_est;
+        innovation(t) = y;
+    end
+    %% 11. FINAL ESTIMATED PARAMETERS
+    alpha_h_hat  = history_x_est(8,end);
+    alpha_m_hat  = history_x_est(9,end);
+    beta_h_hat   = history_x_est(10,end);
+    beta_m_hat   = history_x_est(11,end);
+    sigma_h_hat  = history_x_est(12,end);
+    mu_m_hat     = history_x_est(13,end);
+    Lambda_m_hat = history_x_est(14,end);
+    
+    %% ============================================================
+    %  PRINT: EKF STATE VARIABLES ESTIMATION PER YEAR
+    % ============================================================
+    tabel_variabel_per_tahun = table( ...
+        tahun(:), ...
+        history_x_est(1, :)', ...
+        history_x_est(2, :)', ...
+        history_x_est(3, :)', ...
+        history_x_est(4, :)', ...
+        history_x_est(5, :)', ...
+        history_x_est(6, :)', ...
+        history_x_est(7, :)', ...
+        'VariableNames', {'Year', 'Sh_Est', 'Eh_Est', 'Ih_Est', ...
+                          'Rh_Est', 'Sm_Est', 'Em_Est', 'Im_Est'} ...
+    );
+    fprintf('\n============================================================================================\n');
+    fprintf('                    TABLE OF EKF STATE VARIABLE ESTIMATIONS PER YEAR                        \n');
+    fprintf('============================================================================================\n');
+    disp(tabel_variabel_per_tahun);
+
+    %% 11a. PRINT: EKF PARAMETER ESTIMATIONS PER YEAR
+    alpha_h_est  = history_x_est(8,:)';
+    alpha_m_est  = history_x_est(9,:)';
+    beta_h_est   = history_x_est(10,:)';
+    beta_m_est   = history_x_est(11,:)';
+    sigma_h_est  = history_x_est(12,:)';
+    mu_m_est     = history_x_est(13,:)';
+    Lambda_m_est = history_x_est(14,:)';
+    tabel_parameter_per_tahun = table( ...
+        tahun(:), ...
+        alpha_h_est, ...
+        alpha_m_est, ...
+        beta_h_est, ...
+        beta_m_est, ...
+        sigma_h_est, ...
+        mu_m_est, ...
+        Lambda_m_est, ...
+        'VariableNames', {'Year', 'alpha_h', 'alpha_m', 'beta_h', ...
+                          'beta_m', 'sigma_h', 'mu_m', 'Lambda_m'} ...
+    );
+    fprintf('\n============================================================================================\n');
+    fprintf('                    TABLE OF EKF PARAMETER ESTIMATIONS PER YEAR                            \n');
+    fprintf('============================================================================================\n');
+    disp(tabel_parameter_per_tahun);
+    fprintf('\n============================================================================================\n');
+    fprintf('                    FINAL EKF ESTIMATED PARAMETER VALUES FOR YEAR 2024                      \n');
+    fprintf('============================================================================================\n');
+    fprintf('alpha_h  = %.12e\n', alpha_h_hat);
+    fprintf('alpha_m  = %.12e\n', alpha_m_hat);
+    fprintf('beta_h   = %.12e\n', beta_h_hat);
+    fprintf('beta_m   = %.12e\n', beta_m_hat);
+    fprintf('sigma_h  = %.12e\n', sigma_h_hat);
+    fprintf('mu_m     = %.12e\n', mu_m_hat);
+    fprintf('Lambda_m = %.12e\n', Lambda_m_hat);
+    fprintf('============================================================================================\n');
+    %% 11b. COMBINED PARAMETERS TABLE
+    nama_param = {'Lambda_h'; 'theta_h'; 'mu_h'; ...
+                  'alpha_h'; 'alpha_m'; 'beta_h'; 'beta_m'; ...
+                  'sigma_h'; 'mu_m'; 'Lambda_m'};
+    nilai_param = [Lambda_h; theta_h; mu_h; ...
+                   alpha_h_hat; alpha_m_hat; beta_h_hat; beta_m_hat; ...
+                   sigma_h_hat; mu_m_hat; Lambda_m_hat];
+    sumber_param = {'Fixed'; 'Fixed'; 'Fixed'; ...
+                    'EKF Estimated'; 'EKF Estimated'; 'EKF Estimated'; ...
+                    'EKF Estimated'; 'EKF Estimated'; 'EKF Estimated'; 'EKF Estimated'};
+    tabel_parameter_gabungan = table(nama_param, nilai_param, sumber_param, ...
+        'VariableNames', {'Parameter', 'Value', 'Source'});
+    fprintf('\n============================================================\n');
+    fprintf('        COMBINED PARAMETERS FROM EKF ESTIMATION\n');
+    fprintf('============================================================\n');
+    disp(tabel_parameter_gabungan);
+    %% 12. DIRECT EKF FILTER RESULTS
+    Ih_estimasi_EKF = history_x_est(3,:)';
+    error_EKF = data_Ih_asli - Ih_estimasi_EKF;
+    abs_error_EKF = abs(error_EKF);
+    ape_EKF = abs(error_EKF ./ data_Ih_asli) * 100;
+    rmse_EKF = sqrt(mean(error_EKF.^2));
+    mae_EKF = mean(abs_error_EKF);
+    mape_EKF = mean(ape_EKF);
+    tabel_EKF = table(tahun(:), data_Ih_asli(:), Ih_estimasi_EKF(:), ...
+        error_EKF(:), abs_error_EKF(:), ape_EKF(:), ...
+        'VariableNames', {'Year', 'Ih_Actual', 'Ih_Estimated_EKF', ...
+                          'Error', 'Abs_Error', 'APE_Percent'});
+    fprintf('\n============================================================\n');
+    fprintf('        Ih ESTIMATION RESULTS USING EKF (UNFORCED)\n');
+    fprintf('============================================================\n');
+    fprintf('RMSE EKF : %.6f\n', rmse_EKF);
+    fprintf('MAE  EKF : %.6f\n', mae_EKF);
+    fprintf('MAPE EKF : %.6f %%\n', mape_EKF);
+    fprintf('============================================================\n');
+    disp(tabel_EKF);
+    %% 13. FREE MODEL VALIDATION (Calculation kept for table storage, graphics removed)
+    param_final = [alpha_h_hat; alpha_m_hat; beta_h_hat; beta_m_hat; ...
+                   sigma_h_hat; mu_m_hat; Lambda_m_hat];
+    hasil_validasi = simulasi_validasi_bebas( ...
+        [Sh0; Eh0; Ih0; Rh0; Sm0; Em0; Im0], ...
+        param_final, Lambda_h, theta_h, mu_h, ...
+        N_steps, dt, sub_steps);
+    Ih_validasi = hasil_validasi(3,:)';
+    error_validasi = data_Ih_asli - Ih_validasi;
+    abs_error_validasi = abs(error_validasi);
+    ape_validasi = abs(error_validasi ./ data_Ih_asli) * 100;
+    rmse_validasi = sqrt(mean(error_validasi.^2));
+    mae_validasi = mean(abs_error_validasi);
+    mape_validasi = mean(ape_validasi);
+    tabel_validasi = table(tahun(:), data_Ih_asli(:), Ih_validasi(:), ...
+        error_validasi(:), abs_error_validasi(:), ape_validasi(:), ...
+        'VariableNames', {'Year', 'Ih_Actual', 'Ih_Validation_Model', ...
+                          'Error', 'Abs_Error', 'APE_Percent'});
+    fprintf('\n============================================================\n');
+    fprintf('        FREE MODEL VALIDATION (UNFORCED)\n');
+    fprintf('============================================================\n');
+    fprintf('RMSE Validation : %.6f\n', rmse_validasi);
+    fprintf('MAE  Validation : %.6f\n', mae_validasi);
+    fprintf('MAPE Validation : %.6f %%\n', mape_validasi);
+    fprintf('============================================================\n');
+    disp(tabel_validasi);
+    
+    %% 14. COMPARISON VISUALIZATION (VALIDATION LINE REMOVED)
+    figure('Name', 'Comparison of Actual Data and EKF Estimation', ...
+           'Position', [50, 100, 900, 500]);
+    plot(tahun, data_Ih_asli, 'ro-', ...
+         'LineWidth', 2, 'MarkerFaceColor', 'r');
+    hold on;
+    plot(tahun, Ih_estimasi_EKF, 'b*--', ...
+         'LineWidth', 1.5);
+    grid on;
+    xlabel('Year');
+    ylabel('Number of Cases I_h');
+    title('Actual Data vs EKF Estimation');
+    legend('Actual Ih Data', 'EKF Estimation', 'Location', 'Best');
+    
+    %% ============================================================
+    %  16. STATE DYNAMICS PLOTS (1 VARIABLE PER INDEPENDENT FIGURE)
+    % ============================================================
+    labels = {'S_h (Susceptible Human)', 'E_h (Exposed Human)', 'I_h (Infected Human)', ...
+              'R_h (Recovered Human)', 'S_m (Susceptible Mosquito)', 'E_m (Exposed Mosquito)', ...
+              'I_m (Infected Mosquito)'};
+    colors = {[0 0.5 0], [0.75 0 0.75], [0 0 1], [0.3 0.3 0.3], [0 0.6 0.6], [1 0 0], [0.5 0 0.5]};
+    
+    for j = 1:7
+        figure('Name', ['Dynamics of ' labels{j}], 'Position', [100 + (j*25), 100 + (j*15), 750, 450]);
+        if j == 1
+            Sh_est_juta = history_x_est(1,:) / 1e6;
+            plot(tahun, Sh_est_juta, 'o-', 'Color', colors{j}, 'LineWidth', 2, 'MarkerFaceColor', colors{j});
+            ylabel('S_h (Million Individuals)');
+            title('Dynamics of S_h (Susceptible Human) - Million Scale');
+            ymin = min(Sh_est_juta); ymax = max(Sh_est_juta);
+            padding = max(0.1, 0.05 * (ymax - ymin));
+            ylim([ymin - padding, ymax + padding]);
+        elseif j == 3
+            plot(tahun, data_Ih_asli, 'ro-', 'LineWidth', 1.5, 'MarkerFaceColor', 'r'); hold on;
+            plot(tahun, history_x_est(j,:), 'b*--', 'LineWidth', 1.5);
+            ylabel('Population Individuals');
+            title('Dynamics of I_h (Infected Human)');
+            legend('Actual Ih', 'EKF Ih', 'Location', 'Best');
+        else
+            plot(tahun, history_x_est(j,:), 'o-', 'Color', colors{j}, 'LineWidth', 1.5, 'MarkerFaceColor', colors{j});
+            ylabel('Population');
+            title(['Dynamics of ', labels{j}]);
+        end
+        grid on;
+        xlabel('Year');
+        xlim([min(tahun), max(tahun)]);
+        xticks(tahun);
+    end
+
+    %% ============================================================
+    %  17. PARAMETER CONVERGENCE GRAPH (REMAINS COMBINED IN 1 FIGURE)
+    % ============================================================
+    figure('Name', 'EKF Parameter Convergence', ...
+           'Position', [200, 50, 950, 850]);
+    param_labels = {'\alpha_h', '\alpha_m', '\beta_h', '\beta_m', ...
+                    '\sigma_h', '\mu_m', '\Lambda_m'};
+    for j = 1:7
+        subplot(4,2,j);
+        plot(tahun, history_x_est(j+7,:), 'o-', 'LineWidth', 1.5);
+        grid on;
+        xlabel('Year');
+        ylabel(param_labels{j});
+        title(['Estimation of ', param_labels{j}]);
+        xlim([min(tahun), max(tahun)]);
+        xticks(tahun);
+    end
+    %% 18. SAVE TO WORKSPACE
+    assignin('base', 'history_x_est', history_x_est);
+    assignin('base', 'history_x_pred', history_x_pred);
+    assignin('base', 'innovation_EKF', innovation);
+    assignin('base', 'tabel_variabel_per_tahun', tabel_variabel_per_tahun);
+    assignin('base', 'tabel_parameter_per_tahun', tabel_parameter_per_tahun);
+    assignin('base', 'tabel_parameter_gabungan', tabel_parameter_gabungan);
+    assignin('base', 'tabel_EKF', tabel_EKF);
+    assignin('base', 'tabel_validasi', tabel_validasi);
+end
+
+%% ========================================================================
+%  ONE-STEP MODEL FUNCTION
+%% ========================================================================
+function x_next = model_step(x, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub)
+    x_next = x;
+    h = dt / sub_steps;
+    for s = 1:sub_steps
+        dx = sistem_model(x_next, Lambda_h, theta_h, mu_h);
+        x_next = x_next + h * dx;
+        x_next = min(max(x_next, lb), ub);
+    end
+end
+
+%% ========================================================================
+%  DIFFERENTIAL MODEL SYSTEM
+%% ========================================================================
+function dx = sistem_model(x, Lambda_h, theta_h, mu_h)
+    Sh = x(1); Eh = x(2); Ih = x(3); Rh = x(4); Sm = x(5); Em = x(6); Im = x(7);
+    alpha_h  = x(8); alpha_m  = x(9); beta_h   = x(10); beta_m   = x(11);
+    sigma_h  = x(12); mu_m     = x(13); Lambda_m = x(14);
+    dSh = Lambda_h + sigma_h*Rh - alpha_h*Sh*Im - mu_h*Sh;
+    dEh = alpha_h*Sh*Im - (beta_h + mu_h)*Eh;
+    dIh = beta_h*Eh - (theta_h + mu_h)*Ih;
+    dRh = theta_h*Ih - (sigma_h + mu_h)*Rh;
+    dSm = Lambda_m - alpha_m*Sm*Ih - mu_m*Sm;
+    dEm = alpha_m*Sm*Ih - (beta_m + mu_m)*Em;
+    dIm = beta_m*Em - mu_m*Im;
+    dx = [dSh; dEh; dIh; dRh; dSm; dEm; dIm; 0; 0; 0; 0; 0; 0; 0];
+end
+
+%% ========================================================================
+%  NUMERICAL JACOBIAN
+%% ========================================================================
+function F = jacobian_numerik(x, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub)
+    n = length(x); F = zeros(n,n);
+    for j = 1:n
+        delta = step_jacobian(x(j), j);
+        xp = x; xm = x;
+        xp(j) = min(ub(j), x(j) + delta);
+        xm(j) = max(lb(j), x(j) - delta);
+        denom = xp(j) - xm(j);
+        if abs(denom) < eps
+            F(:,j) = 0; F(j,j) = 1;
+        else
+            fp = model_step(xp, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub);
+            fm = model_step(xm, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub);
+            F(:,j) = (fp - fm) / denom;
+        end
+    end
+end
+
+%% ========================================================================
+%  JACOBIAN STEP SIZE
+%% ========================================================================
+function delta = step_jacobian(xj, indeks)
+    if indeks <= 7
+        delta = max(1, 1e-6 * max(abs(xj), 1));
+    elseif indeks == 8 || indeks == 9
+        delta = max(1e-12, 1e-4 * max(abs(xj), 1e-8));
+    elseif indeks >= 10 && indeks <= 13
+        delta = max(1e-6, 1e-5 * max(abs(xj), 1));
+    else
+        delta = max(1, 1e-6 * max(abs(xj), 1));
+    end
+end
+
+%% ========================================================================
+%  FREE VALIDATION SIMULATION
+%% ========================================================================
+function hasil = simulasi_validasi_bebas(x0_state, param, Lambda_h, theta_h, mu_h, N_steps, dt, sub_steps)
+    alpha_h = param(1); alpha_m = param(2); beta_h = param(3); beta_m = param(4);
+    sigma_h = param(5); mu_m = param(6); Lambda_m = param(7);
+    hasil = zeros(7, N_steps); hasil(:,1) = x0_state;
+    x = [x0_state; alpha_h; alpha_m; beta_h; beta_m; sigma_h; mu_m; Lambda_m];
+    lb = [zeros(7,1); 1e-12; 1e-12; 1e-6; 1e-6; 1e-6; 1e-6; 1e3];
+    ub = [inf(7,1); 1e-5; 1e-5; 100; 100; 10; 10; 1e9];
+    for t = 2:N_steps
+        x = model_step(x, Lambda_h, theta_h, mu_h, dt, sub_steps, lb, ub);
+        hasil(:,t) = x(1:7);
+    end
+end
